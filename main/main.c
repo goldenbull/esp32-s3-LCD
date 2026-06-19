@@ -1,13 +1,18 @@
 #include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
+#include "led_strip.h"
+#include "led_strip_rmt.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_st7789.h"
 #include "esp_lcd_panel_ops.h"
 
 /* Waveshare ESP32-S3-LCD-1.47B pin assignments */
+#define PIN_LED   38
 #define PIN_MOSI  45
 #define PIN_SCLK  40
 #define PIN_CS    42
@@ -76,6 +81,29 @@ static void draw_hello(uint16_t *fb)
     }
 }
 
+static void led_task(void *arg)
+{
+    led_strip_handle_t strip;
+    led_strip_config_t strip_cfg = {
+        .strip_gpio_num = PIN_LED,
+        .max_leds = 1,
+    };
+    led_strip_rmt_config_t rmt_cfg = {
+        .resolution_hz = 10 * 1000 * 1000,
+    };
+    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &strip));
+    led_strip_clear(strip);
+
+    uint16_t hue = 0;
+    while (1) {
+        /* Full saturation, moderate brightness to avoid glare */
+        led_strip_set_pixel_hsv(strip, 0, hue, 255, 60);
+        led_strip_refresh(strip);
+        hue = (hue + 1) % 360;
+        vTaskDelay(pdMS_TO_TICKS(20));  /* full rainbow cycle ≈ 7 s */
+    }
+}
+
 void app_main(void)
 {
     gpio_set_direction(PIN_BL, GPIO_MODE_OUTPUT);
@@ -133,4 +161,6 @@ void app_main(void)
     free(fb);
 
     gpio_set_level(PIN_BL, 1);  /* backlight on */
+
+    xTaskCreate(led_task, "led", 2048, NULL, 5, NULL);
 }
