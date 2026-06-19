@@ -2,6 +2,7 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
+#include "esp_random.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_st7789.h"
 #include "esp_lcd_panel_ops.h"
@@ -23,9 +24,14 @@
 #define X_OFFSET  34
 #define Y_OFFSET   0
 
-/* RGB565 colors */
+/* RGB565 background color */
 #define COL_BG  0x0000  /* black */
-#define COL_FG  0xFFFF  /* white */
+
+/* Force the high bit of each RGB565 channel so colors are never near-black */
+static uint16_t rand_color(void)
+{
+    return (uint16_t)(esp_random() | 0x8410);
+}
 
 /* ── 5×8 bitmap glyphs for h, e, l, o ──────────────────────────────────────
    One byte per row. Bit 7 = leftmost pixel; only the top 5 bits are used.  */
@@ -53,6 +59,7 @@ static void draw_hello(uint16_t *fb)
     for (int ci = 0; ci < N_CHARS; ci++) {
         const uint8_t *g = GLYPHS[HELLO[ci]];
         int cx = x0 + ci * (GLYPH_W + KERN) * SCALE;
+        uint16_t color = rand_color();
 
         for (int row = 0; row < GLYPH_H; row++) {
             for (int col = 0; col < GLYPH_W; col++) {
@@ -62,7 +69,7 @@ static void draw_hello(uint16_t *fb)
                         int px = cx + col * SCALE + sx;
                         int py = y0 + row * SCALE + sy;
                         if ((unsigned)px < LCD_W && (unsigned)py < LCD_H)
-                            fb[py * LCD_W + px] = COL_FG;
+                            fb[py * LCD_W + px] = color;
                     }
             }
         }
