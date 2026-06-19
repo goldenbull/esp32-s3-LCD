@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -29,55 +30,130 @@
 #define X_OFFSET  34
 #define Y_OFFSET   0
 
-/* RGB565 background color */
-#define COL_BG  0x0000  /* black */
+/* ── 5×8 bitmap glyphs: 0-9, A-Z, a-z (62 total) ───────────────────────────
+   One byte per row. Bit 7 = leftmost pixel; only the top 5 bits are used.  */
+static const uint8_t GLYPHS[36][8] = {
+    /* 0 */ {0x70, 0x88, 0x88, 0x88, 0x88, 0x88, 0x70, 0x00},
+    /* 1 */ {0x20, 0x60, 0x20, 0x20, 0x20, 0x20, 0x70, 0x00},
+    /* 2 */ {0x70, 0x88, 0x08, 0x10, 0x20, 0x40, 0xF8, 0x00},
+    /* 3 */ {0x70, 0x88, 0x08, 0x30, 0x08, 0x88, 0x70, 0x00},
+    /* 4 */ {0x10, 0x30, 0x50, 0x90, 0xF8, 0x10, 0x10, 0x00},
+    /* 5 */ {0xF8, 0x80, 0x80, 0xF0, 0x08, 0x08, 0xF0, 0x00},
+    /* 6 */ {0x70, 0x80, 0x80, 0xF0, 0x88, 0x88, 0x70, 0x00},
+    /* 7 */ {0xF8, 0x08, 0x10, 0x20, 0x40, 0x40, 0x40, 0x00},
+    /* 8 */ {0x70, 0x88, 0x88, 0x70, 0x88, 0x88, 0x70, 0x00},
+    /* 9 */ {0x70, 0x88, 0x88, 0x78, 0x08, 0x08, 0x70, 0x00},
+    /* a */ {0x00, 0x00, 0x70, 0x08, 0x78, 0x88, 0x78, 0x00},
+    /* b */ {0x80, 0x80, 0xF0, 0x88, 0x88, 0x88, 0xF0, 0x00},
+    /* c */ {0x00, 0x00, 0x70, 0x80, 0x80, 0x80, 0x70, 0x00},
+    /* d */ {0x08, 0x08, 0x78, 0x88, 0x88, 0x88, 0x78, 0x00},
+    /* e */ {0x00, 0x00, 0x70, 0x88, 0xF8, 0x80, 0x70, 0x00},
+    /* f */ {0x30, 0x40, 0xE0, 0x40, 0x40, 0x40, 0x40, 0x00},
+    /* g */ {0x00, 0x70, 0x88, 0x88, 0x78, 0x08, 0x88, 0x70},
+    /* h */ {0x80, 0x80, 0xF0, 0x88, 0x88, 0x88, 0x88, 0x00},
+    /* i */ {0x20, 0x00, 0x60, 0x20, 0x20, 0x20, 0x70, 0x00},
+    /* j */ {0x10, 0x00, 0x10, 0x10, 0x10, 0x10, 0x90, 0x60},
+    /* k */ {0x80, 0x80, 0x90, 0xA0, 0xC0, 0xA0, 0x90, 0x00},
+    /* l */ {0x60, 0x20, 0x20, 0x20, 0x20, 0x20, 0x70, 0x00},
+    /* m */ {0x00, 0x00, 0xD0, 0xA8, 0xA8, 0x88, 0x88, 0x00},
+    /* n */ {0x00, 0x00, 0xF0, 0x88, 0x88, 0x88, 0x88, 0x00},
+    /* o */ {0x00, 0x00, 0x70, 0x88, 0x88, 0x88, 0x70, 0x00},
+    /* p */ {0x00, 0xF0, 0x88, 0x88, 0xF0, 0x80, 0x80, 0x00},
+    /* q */ {0x00, 0x78, 0x88, 0x88, 0x78, 0x08, 0x08, 0x00},
+    /* r */ {0x00, 0x00, 0xB0, 0xC0, 0x80, 0x80, 0x80, 0x00},
+    /* s */ {0x00, 0x00, 0x70, 0x80, 0x70, 0x08, 0x70, 0x00},
+    /* t */ {0x40, 0x40, 0xE0, 0x40, 0x40, 0x40, 0x30, 0x00},
+    /* u */ {0x00, 0x00, 0x88, 0x88, 0x88, 0x88, 0x78, 0x00},
+    /* v */ {0x00, 0x00, 0x88, 0x88, 0x88, 0x50, 0x20, 0x00},
+    /* w */ {0x00, 0x00, 0x88, 0x88, 0xA8, 0xA8, 0x50, 0x00},
+    /* x */ {0x00, 0x00, 0x88, 0x50, 0x20, 0x50, 0x88, 0x00},
+    /* y */ {0x00, 0x00, 0x88, 0x88, 0x88, 0x78, 0x08, 0x70},
+    /* z */ {0x00, 0x00, 0xF8, 0x10, 0x20, 0x40, 0xF8, 0x00},
+};
+#define N_GLYPHS 36
+#define GLYPH_W  5
+#define GLYPH_H  8
 
-/* Force the high bit of each RGB565 channel so colors are never near-black */
-static uint16_t rand_color(void)
+/* ── Matrix rain ──────────────────────────────────────────────────────────── */
+#define RAIN_SCALE  3
+#define RAIN_GW     (GLYPH_W * RAIN_SCALE)   /* 15 px per glyph */
+#define RAIN_GH     (GLYPH_H * RAIN_SCALE)   /* 24 px per glyph */
+#define RAIN_COL_W  (RAIN_GW + 4)            /* 17 px column pitch, 2 px gap */
+#define N_STREAMS   (LCD_W / RAIN_COL_W)     /* 10 columns */
+#define TRAIL_LEN   10                        /* characters in each tail */
+#define CHAR_PERIOD  5                        /* frames between character changes */
+
+/* TRAIL_COLS[0] = oldest/darkest, TRAIL_COLS[TRAIL_LEN] = head (white) */
+static const uint16_t TRAIL_COLS[TRAIL_LEN + 1] = {
+    0x0040, 0x0080, 0x00E0, 0x0160, 0x01C0,
+    0x0260, 0x0360, 0x04A0, 0x0640, 0x07C0,
+    0xFFFF,  /* head = white */
+};
+
+static struct {
+    int y, speed;
+    int tick;                      /* counts up to CHAR_PERIOD, then resets */
+    uint8_t chars[TRAIL_LEN + 1]; /* stored glyph index per trail slot */
+} streams[N_STREAMS];
+
+static void pick_chars(int s)
 {
-    return (uint16_t)(esp_random() | 0x8410);
+    for (int t = 0; t <= TRAIL_LEN; t++)
+        streams[s].chars[t] = (uint8_t)(esp_random() % N_GLYPHS);
 }
 
-/* ── 5×8 bitmap glyphs for h, e, l, o ──────────────────────────────────────
-   One byte per row. Bit 7 = leftmost pixel; only the top 5 bits are used.  */
-static const uint8_t GLYPHS[][8] = {
-    /* h */ {0x80, 0x80, 0x80, 0xF0, 0x88, 0x88, 0x88, 0x00},
-    /* e */ {0x00, 0x00, 0x70, 0x88, 0xF8, 0x80, 0x70, 0x00},
-    /* l */ {0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x60, 0x00},
-    /* o */ {0x00, 0x00, 0x70, 0x88, 0x88, 0x88, 0x70, 0x00},
-};
-static const int HELLO[]  = {0, 1, 2, 2, 3};   /* h e l l o → glyph indices */
-static const int N_CHARS  = 5;
-static const int GLYPH_W  = 5;
-static const int GLYPH_H  = 8;
-static const int SCALE    = 5;   /* each glyph pixel → 5×5 display pixels   */
-static const int KERN     = 1;   /* gap between chars, in glyph pixels       */
-
-static void draw_hello(uint16_t *fb)
+static void draw_glyph_at(uint16_t *fb, int gx, int gy, int gidx, uint16_t color)
 {
-    for (int i = 0; i < LCD_W * LCD_H; i++) fb[i] = COL_BG;
+    const uint8_t *g = GLYPHS[gidx];
+    for (int row = 0; row < GLYPH_H; row++)
+        for (int col = 0; col < GLYPH_W; col++) {
+            if (!((g[row] >> (7 - col)) & 1)) continue;
+            for (int sy = 0; sy < RAIN_SCALE; sy++)
+                for (int sx = 0; sx < RAIN_SCALE; sx++) {
+                    int px = gx + col * RAIN_SCALE + sx;
+                    int py = gy + row * RAIN_SCALE + sy;
+                    if ((unsigned)px < LCD_W && (unsigned)py < LCD_H)
+                        fb[py * LCD_W + px] = color;
+                }
+        }
+}
 
-    int text_w = (N_CHARS * GLYPH_W + (N_CHARS - 1) * KERN) * SCALE;
-    int x0 = (LCD_W - text_w) / 2;
-    int y0 = (LCD_H - GLYPH_H * SCALE) / 2;
+static void rain_loop(uint16_t *fb, esp_lcd_panel_handle_t panel)
+{
+    for (int s = 0; s < N_STREAMS; s++) {
+        streams[s].y     = -(int)(esp_random() % (uint32_t)LCD_H);
+        streams[s].speed = 2 + (int)(esp_random() % 3);
+        streams[s].tick  = (int)(esp_random() % CHAR_PERIOD); /* stagger columns */
+        pick_chars(s);
+    }
 
-    for (int ci = 0; ci < N_CHARS; ci++) {
-        const uint8_t *g = GLYPHS[HELLO[ci]];
-        int cx = x0 + ci * (GLYPH_W + KERN) * SCALE;
-        uint16_t color = rand_color();
+    while (1) {
+        memset(fb, 0, LCD_W * LCD_H * sizeof(uint16_t));
 
-        for (int row = 0; row < GLYPH_H; row++) {
-            for (int col = 0; col < GLYPH_W; col++) {
-                if (!((g[row] >> (7 - col)) & 1)) continue;
-                for (int sy = 0; sy < SCALE; sy++)
-                    for (int sx = 0; sx < SCALE; sx++) {
-                        int px = cx + col * SCALE + sx;
-                        int py = y0 + row * SCALE + sy;
-                        if ((unsigned)px < LCD_W && (unsigned)py < LCD_H)
-                            fb[py * LCD_W + px] = color;
-                    }
+        for (int s = 0; s < N_STREAMS; s++) {
+            int x = s * RAIN_COL_W;
+
+            /* Draw tail (oldest = darkest green) down to head (white) */
+            for (int t = TRAIL_LEN; t >= 0; t--) {
+                int gy = streams[s].y - t * RAIN_GH;
+                if (gy <= -RAIN_GH || gy >= LCD_H) continue;
+                draw_glyph_at(fb, x, gy, streams[s].chars[t], TRAIL_COLS[TRAIL_LEN - t]);
+            }
+
+            streams[s].y += streams[s].speed;
+            if (streams[s].y > LCD_H + TRAIL_LEN * RAIN_GH) {
+                streams[s].y     = -(RAIN_GH + (int)(esp_random() % (uint32_t)LCD_H));
+                streams[s].speed = 2 + (int)(esp_random() % 3);
+                pick_chars(s);
+            }
+
+            if (++streams[s].tick >= CHAR_PERIOD) {
+                streams[s].tick = 0;
+                pick_chars(s);
             }
         }
+
+        esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_W, LCD_H, fb);
     }
 }
 
@@ -156,11 +232,7 @@ void app_main(void)
     if (!fb) fb = malloc(fb_sz);  /* fall back to internal RAM */
     assert(fb != NULL);
 
-    draw_hello(fb);
-    esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_W, LCD_H, fb);
-    free(fb);
-
     gpio_set_level(PIN_BL, 1);  /* backlight on */
-
     xTaskCreate(led_task, "led", 2048, NULL, 5, NULL);
+    rain_loop(fb, panel);  /* never returns; fb stays alive */
 }
