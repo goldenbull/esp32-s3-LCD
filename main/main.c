@@ -2,6 +2,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
@@ -85,10 +86,12 @@ static const uint8_t GLYPHS[36][8] = {
 #define SPEED_MIN    3                        /* slowest stream (px/frame) */
 #define SPEED_MAX    8                        /* fastest stream (px/frame) */
 
-/* TRAIL_COLS[0] = oldest/darkest, TRAIL_COLS[TRAIL_LEN] = head (white) */
+/* TRAIL_COLS[0] = oldest/darkest, TRAIL_COLS[TRAIL_LEN] = head (white).
+   Green brightness follows smoothstep 3t²-2t³ (slow→fast→slow fade).
+   green = round(63 * smoothstep(i/9)), encoded as RGB565 (green bits [10:5]). */
 static const uint16_t TRAIL_COLS[TRAIL_LEN + 1] = {
-    0x0040, 0x0080, 0x00E0, 0x0160, 0x01C0,
-    0x0260, 0x0360, 0x04A0, 0x0640, 0x07C0,
+    0x0000, 0x0040, 0x0100, 0x0200, 0x0340,
+    0x04A0, 0x05E0, 0x06E0, 0x07A0, 0x07E0,
     0xFFFF,  /* head = white */
 };
 
@@ -122,6 +125,17 @@ static void draw_glyph_at(uint16_t *fb, int gx, int gy, int gidx, uint16_t color
         }
 }
 
+static SemaphoreHandle_t s_trans_done;
+
+static bool IRAM_ATTR on_trans_done(esp_lcd_panel_io_handle_t io,
+                                    esp_lcd_panel_io_event_data_t *edata,
+                                    void *ctx)
+{
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_trans_done, &woken);
+    return woken == pdTRUE;
+}
+
 static void rain_loop(uint16_t *fb, esp_lcd_panel_handle_t panel)
 {
     for (int s = 0; s < N_STREAMS; s++) {
@@ -131,6 +145,9 @@ static void rain_loop(uint16_t *fb, esp_lcd_panel_handle_t panel)
     }
 
     while (1) {
+        /* Block until the ST7789 finishes clocking out the previous frame */
+        xSemaphoreTake(s_trans_done, portMAX_DELAY);
+
         memset(fb, 0, LCD_W * LCD_H * sizeof(uint16_t));
 
         for (int s = 0; s < N_STREAMS; s++) {
@@ -200,14 +217,19 @@ void app_main(void)
 
     /* ── Panel IO (SPI → LCD command/data) ───────────────────────────────── */
     esp_lcd_panel_io_handle_t io;
+    s_trans_done = xSemaphoreCreateBinary();
+    xSemaphoreGive(s_trans_done);  /* prime so the first frame starts immediately */
+
     esp_lcd_panel_io_spi_config_t io_cfg = {
-        .dc_gpio_num       = PIN_DC,
-        .cs_gpio_num       = PIN_CS,
-        .pclk_hz           = 40 * 1000 * 1000,
-        .lcd_cmd_bits      = 8,
-        .lcd_param_bits    = 8,
-        .spi_mode          = 0,
-        .trans_queue_depth = 10,
+        .dc_gpio_num          = PIN_DC,
+        .cs_gpio_num          = PIN_CS,
+        .pclk_hz              = 40 * 1000 * 1000,
+        .lcd_cmd_bits         = 8,
+        .lcd_param_bits       = 8,
+        .spi_mode             = 0,
+        .trans_queue_depth    = 10,
+        .on_color_trans_done  = on_trans_done,
+        .user_ctx             = NULL,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io));
 
