@@ -76,12 +76,14 @@ static const uint8_t GLYPHS[36][8] = {
 
 /* ── Matrix rain ──────────────────────────────────────────────────────────── */
 #define RAIN_SCALE  3
-#define RAIN_GW     (GLYPH_W * RAIN_SCALE)   /* 15 px per glyph */
-#define RAIN_GH     (GLYPH_H * RAIN_SCALE)   /* 24 px per glyph */
-#define RAIN_COL_W  (RAIN_GW + 4)            /* 17 px column pitch, 2 px gap */
-#define N_STREAMS   (LCD_W / RAIN_COL_W)     /* 10 columns */
+#define RAIN_GW     (GLYPH_W * RAIN_SCALE)    /* 15 px per glyph */
+#define RAIN_GH     (GLYPH_H * RAIN_SCALE)    /* 24 px per glyph */
+#define RAIN_COL_W  10                        /* 10 px pitch — columns overlap */
+#define N_STREAMS   (LCD_W / RAIN_COL_W)      /* 17 columns */
 #define TRAIL_LEN   10                        /* characters in each tail */
 #define CHAR_PERIOD  5                        /* frames between character changes */
+#define SPEED_MIN    3                        /* slowest stream (px/frame) */
+#define SPEED_MAX    8                        /* fastest stream (px/frame) */
 
 /* TRAIL_COLS[0] = oldest/darkest, TRAIL_COLS[TRAIL_LEN] = head (white) */
 static const uint16_t TRAIL_COLS[TRAIL_LEN + 1] = {
@@ -92,14 +94,16 @@ static const uint16_t TRAIL_COLS[TRAIL_LEN + 1] = {
 
 static struct {
     int y, speed;
-    int tick;                      /* counts up to CHAR_PERIOD, then resets */
-    uint8_t chars[TRAIL_LEN + 1]; /* stored glyph index per trail slot */
+    int ticks[TRAIL_LEN + 1];     /* per-slot frame counter */
+    uint8_t chars[TRAIL_LEN + 1]; /* per-slot glyph index */
 } streams[N_STREAMS];
 
-static void pick_chars(int s)
+static void init_stream_chars(int s)
 {
-    for (int t = 0; t <= TRAIL_LEN; t++)
+    for (int t = 0; t <= TRAIL_LEN; t++) {
+        streams[s].ticks[t] = (int)(esp_random() % CHAR_PERIOD);
         streams[s].chars[t] = (uint8_t)(esp_random() % N_GLYPHS);
+    }
 }
 
 static void draw_glyph_at(uint16_t *fb, int gx, int gy, int gidx, uint16_t color)
@@ -110,8 +114,8 @@ static void draw_glyph_at(uint16_t *fb, int gx, int gy, int gidx, uint16_t color
             if (!((g[row] >> (7 - col)) & 1)) continue;
             for (int sy = 0; sy < RAIN_SCALE; sy++)
                 for (int sx = 0; sx < RAIN_SCALE; sx++) {
-                    int px = gx + col * RAIN_SCALE + sx;
-                    int py = gy + row * RAIN_SCALE + sy;
+                    int px = gx + (GLYPH_W - 1 - col) * RAIN_SCALE + sx;
+                    int py = gy + (GLYPH_H - 1 - row) * RAIN_SCALE + sy;
                     if ((unsigned)px < LCD_W && (unsigned)py < LCD_H)
                         fb[py * LCD_W + px] = color;
                 }
@@ -121,10 +125,9 @@ static void draw_glyph_at(uint16_t *fb, int gx, int gy, int gidx, uint16_t color
 static void rain_loop(uint16_t *fb, esp_lcd_panel_handle_t panel)
 {
     for (int s = 0; s < N_STREAMS; s++) {
-        streams[s].y     = -(int)(esp_random() % (uint32_t)LCD_H);
-        streams[s].speed = 2 + (int)(esp_random() % 3);
-        streams[s].tick  = (int)(esp_random() % CHAR_PERIOD); /* stagger columns */
-        pick_chars(s);
+        streams[s].y     = LCD_H + (int)(esp_random() % (uint32_t)LCD_H);
+        streams[s].speed = SPEED_MIN + (int)(esp_random() % (SPEED_MAX - SPEED_MIN + 1));
+        init_stream_chars(s);
     }
 
     while (1) {
@@ -133,23 +136,22 @@ static void rain_loop(uint16_t *fb, esp_lcd_panel_handle_t panel)
         for (int s = 0; s < N_STREAMS; s++) {
             int x = s * RAIN_COL_W;
 
-            /* Draw tail (oldest = darkest green) down to head (white) */
+            /* Draw tail (oldest = darkest green) below head (white), rising upward */
             for (int t = TRAIL_LEN; t >= 0; t--) {
-                int gy = streams[s].y - t * RAIN_GH;
+                if (++streams[s].ticks[t] >= CHAR_PERIOD) {
+                    streams[s].ticks[t] = 0;
+                    streams[s].chars[t] = (uint8_t)(esp_random() % N_GLYPHS);
+                }
+                int gy = streams[s].y + t * RAIN_GH;
                 if (gy <= -RAIN_GH || gy >= LCD_H) continue;
                 draw_glyph_at(fb, x, gy, streams[s].chars[t], TRAIL_COLS[TRAIL_LEN - t]);
             }
 
-            streams[s].y += streams[s].speed;
-            if (streams[s].y > LCD_H + TRAIL_LEN * RAIN_GH) {
-                streams[s].y     = -(RAIN_GH + (int)(esp_random() % (uint32_t)LCD_H));
-                streams[s].speed = 2 + (int)(esp_random() % 3);
-                pick_chars(s);
-            }
-
-            if (++streams[s].tick >= CHAR_PERIOD) {
-                streams[s].tick = 0;
-                pick_chars(s);
+            streams[s].y -= streams[s].speed;
+            if (streams[s].y < -(TRAIL_LEN * RAIN_GH)) {
+                streams[s].y     = LCD_H + RAIN_GH + (int)(esp_random() % (uint32_t)LCD_H);
+                streams[s].speed = SPEED_MIN + (int)(esp_random() % (SPEED_MAX - SPEED_MIN + 1));
+                init_stream_chars(s);
             }
         }
 
