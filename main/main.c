@@ -31,49 +31,7 @@
 #define X_OFFSET  34
 #define Y_OFFSET   0
 
-/* ── 5×8 bitmap glyphs: 0-9, A-Z, a-z (62 total) ───────────────────────────
-   One byte per row. Bit 7 = leftmost pixel; only the top 5 bits are used.  */
-static const uint8_t GLYPHS[36][8] = {
-    /* 0 */ {0x70, 0x88, 0x88, 0x88, 0x88, 0x88, 0x70, 0x00},
-    /* 1 */ {0x20, 0x60, 0x20, 0x20, 0x20, 0x20, 0x70, 0x00},
-    /* 2 */ {0x70, 0x88, 0x08, 0x10, 0x20, 0x40, 0xF8, 0x00},
-    /* 3 */ {0x70, 0x88, 0x08, 0x30, 0x08, 0x88, 0x70, 0x00},
-    /* 4 */ {0x10, 0x30, 0x50, 0x90, 0xF8, 0x10, 0x10, 0x00},
-    /* 5 */ {0xF8, 0x80, 0x80, 0xF0, 0x08, 0x08, 0xF0, 0x00},
-    /* 6 */ {0x70, 0x80, 0x80, 0xF0, 0x88, 0x88, 0x70, 0x00},
-    /* 7 */ {0xF8, 0x08, 0x10, 0x20, 0x40, 0x40, 0x40, 0x00},
-    /* 8 */ {0x70, 0x88, 0x88, 0x70, 0x88, 0x88, 0x70, 0x00},
-    /* 9 */ {0x70, 0x88, 0x88, 0x78, 0x08, 0x08, 0x70, 0x00},
-    /* a */ {0x00, 0x00, 0x70, 0x08, 0x78, 0x88, 0x78, 0x00},
-    /* b */ {0x80, 0x80, 0xF0, 0x88, 0x88, 0x88, 0xF0, 0x00},
-    /* c */ {0x00, 0x00, 0x70, 0x80, 0x80, 0x80, 0x70, 0x00},
-    /* d */ {0x08, 0x08, 0x78, 0x88, 0x88, 0x88, 0x78, 0x00},
-    /* e */ {0x00, 0x00, 0x70, 0x88, 0xF8, 0x80, 0x70, 0x00},
-    /* f */ {0x30, 0x40, 0xE0, 0x40, 0x40, 0x40, 0x40, 0x00},
-    /* g */ {0x00, 0x70, 0x88, 0x88, 0x78, 0x08, 0x88, 0x70},
-    /* h */ {0x80, 0x80, 0xF0, 0x88, 0x88, 0x88, 0x88, 0x00},
-    /* i */ {0x20, 0x00, 0x60, 0x20, 0x20, 0x20, 0x70, 0x00},
-    /* j */ {0x10, 0x00, 0x10, 0x10, 0x10, 0x10, 0x90, 0x60},
-    /* k */ {0x80, 0x80, 0x90, 0xA0, 0xC0, 0xA0, 0x90, 0x00},
-    /* l */ {0x60, 0x20, 0x20, 0x20, 0x20, 0x20, 0x70, 0x00},
-    /* m */ {0x00, 0x00, 0xD0, 0xA8, 0xA8, 0x88, 0x88, 0x00},
-    /* n */ {0x00, 0x00, 0xF0, 0x88, 0x88, 0x88, 0x88, 0x00},
-    /* o */ {0x00, 0x00, 0x70, 0x88, 0x88, 0x88, 0x70, 0x00},
-    /* p */ {0x00, 0xF0, 0x88, 0x88, 0xF0, 0x80, 0x80, 0x00},
-    /* q */ {0x00, 0x78, 0x88, 0x88, 0x78, 0x08, 0x08, 0x00},
-    /* r */ {0x00, 0x00, 0xB0, 0xC0, 0x80, 0x80, 0x80, 0x00},
-    /* s */ {0x00, 0x00, 0x70, 0x80, 0x70, 0x08, 0x70, 0x00},
-    /* t */ {0x40, 0x40, 0xE0, 0x40, 0x40, 0x40, 0x30, 0x00},
-    /* u */ {0x00, 0x00, 0x88, 0x88, 0x88, 0x88, 0x78, 0x00},
-    /* v */ {0x00, 0x00, 0x88, 0x88, 0x88, 0x50, 0x20, 0x00},
-    /* w */ {0x00, 0x00, 0x88, 0x88, 0xA8, 0xA8, 0x50, 0x00},
-    /* x */ {0x00, 0x00, 0x88, 0x50, 0x20, 0x50, 0x88, 0x00},
-    /* y */ {0x00, 0x00, 0x88, 0x88, 0x88, 0x78, 0x08, 0x70},
-    /* z */ {0x00, 0x00, 0xF8, 0x10, 0x20, 0x40, 0xF8, 0x00},
-};
-#define N_GLYPHS 36
-#define GLYPH_W  5
-#define GLYPH_H  8
+#include "glyphs.h"
 
 /* ── Matrix rain ──────────────────────────────────────────────────────────── */
 #define RAIN_SCALE  3
@@ -125,7 +83,12 @@ static void draw_glyph_at(uint16_t *fb, int gx, int gy, int gidx, uint16_t color
         }
 }
 
-static SemaphoreHandle_t s_trans_done;
+/* ── Double-buffer state ─────────────────────────────────────────────────── */
+static uint16_t *fb_front;          /* being sent by lcd_task */
+static uint16_t *fb_back;           /* being rendered by rain_loop */
+static SemaphoreHandle_t s_trans_done;   /* ISR → lcd_task: DMA finished */
+static SemaphoreHandle_t s_frame_ready;  /* rain_loop → lcd_task: new frame ready */
+static SemaphoreHandle_t s_frame_free;   /* lcd_task → rain_loop: front buffer released */
 
 static bool IRAM_ATTR on_trans_done(esp_lcd_panel_io_handle_t io,
                                     esp_lcd_panel_io_event_data_t *edata,
@@ -136,7 +99,18 @@ static bool IRAM_ATTR on_trans_done(esp_lcd_panel_io_handle_t io,
     return woken == pdTRUE;
 }
 
-static void rain_loop(uint16_t *fb, esp_lcd_panel_handle_t panel)
+static void lcd_task(void *arg)
+{
+    esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)arg;
+    while (1) {
+        xSemaphoreTake(s_frame_ready, portMAX_DELAY);   /* wait for rendered frame */
+        esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_W, LCD_H, fb_front);
+        xSemaphoreTake(s_trans_done, portMAX_DELAY);    /* wait for DMA to finish */
+        xSemaphoreGive(s_frame_free);                   /* front buffer is now free */
+    }
+}
+
+static void rain_loop(void)
 {
     for (int s = 0; s < N_STREAMS; s++) {
         streams[s].y     = LCD_H + (int)(esp_random() % (uint32_t)LCD_H);
@@ -145,10 +119,8 @@ static void rain_loop(uint16_t *fb, esp_lcd_panel_handle_t panel)
     }
 
     while (1) {
-        /* Block until the ST7789 finishes clocking out the previous frame */
-        xSemaphoreTake(s_trans_done, portMAX_DELAY);
-
-        memset(fb, 0, LCD_W * LCD_H * sizeof(uint16_t));
+        /* Render into back buffer */
+        memset(fb_back, 0, LCD_W * LCD_H * sizeof(uint16_t));
 
         for (int s = 0; s < N_STREAMS; s++) {
             int x = s * RAIN_COL_W;
@@ -161,7 +133,7 @@ static void rain_loop(uint16_t *fb, esp_lcd_panel_handle_t panel)
                 }
                 int gy = streams[s].y + t * RAIN_GH;
                 if (gy <= -RAIN_GH || gy >= LCD_H) continue;
-                draw_glyph_at(fb, x, gy, streams[s].chars[t], TRAIL_COLS[TRAIL_LEN - t]);
+                draw_glyph_at(fb_back, x, gy, streams[s].chars[t], TRAIL_COLS[TRAIL_LEN - t]);
             }
 
             streams[s].y -= streams[s].speed;
@@ -172,7 +144,12 @@ static void rain_loop(uint16_t *fb, esp_lcd_panel_handle_t panel)
             }
         }
 
-        esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_W, LCD_H, fb);
+        /* Wait for lcd_task to finish with the current front buffer, then swap */
+        xSemaphoreTake(s_frame_free, portMAX_DELAY);
+        uint16_t *tmp = fb_front;
+        fb_front = fb_back;
+        fb_back = tmp;
+        xSemaphoreGive(s_frame_ready);
     }
 }
 
@@ -215,10 +192,14 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus, SPI_DMA_CH_AUTO));
 
+    /* ── Double-buffer semaphores ────────────────────────────────────────── */
+    s_trans_done  = xSemaphoreCreateBinary();
+    s_frame_ready = xSemaphoreCreateBinary();
+    s_frame_free  = xSemaphoreCreateBinary();
+    xSemaphoreGive(s_frame_free);  /* prime: rain_loop may swap on its first frame */
+
     /* ── Panel IO (SPI → LCD command/data) ───────────────────────────────── */
     esp_lcd_panel_io_handle_t io;
-    s_trans_done = xSemaphoreCreateBinary();
-    xSemaphoreGive(s_trans_done);  /* prime so the first frame starts immediately */
 
     esp_lcd_panel_io_spi_config_t io_cfg = {
         .dc_gpio_num          = PIN_DC,
@@ -250,13 +231,16 @@ void app_main(void)
     esp_lcd_panel_set_gap(panel, X_OFFSET, Y_OFFSET);
     esp_lcd_panel_disp_on_off(panel, true);
 
-    /* ── Render and push framebuffer ─────────────────────────────────────── */
+    /* ── Two framebuffers (PSRAM preferred) ─────────────────────────────── */
     size_t fb_sz = LCD_W * LCD_H * sizeof(uint16_t);
-    uint16_t *fb = heap_caps_malloc(fb_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!fb) fb = malloc(fb_sz);  /* fall back to internal RAM */
-    assert(fb != NULL);
+    fb_front = heap_caps_malloc(fb_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!fb_front) fb_front = malloc(fb_sz);
+    fb_back  = heap_caps_malloc(fb_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!fb_back)  fb_back  = malloc(fb_sz);
+    assert(fb_front && fb_back);
 
     gpio_set_level(PIN_BL, 1);  /* backlight on */
-    xTaskCreate(led_task, "led", 2048, NULL, 5, NULL);
-    rain_loop(fb, panel);  /* never returns; fb stays alive */
+    xTaskCreate(led_task, "led",      2048, NULL,  5, NULL);
+    xTaskCreate(lcd_task, "lcd_send", 4096, panel, 6, NULL);
+    rain_loop();  /* never returns */
 }
